@@ -1,0 +1,242 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+# 加载必要的包
+library(tidyverse)
+
+# 设置数据路径（根据实际情况修改）
+data_path <- "D:/Users/lenovo/Desktop/Prediction of anticancer drug resistance/dataset/CCLE/"
+
+## 1. 读取基因表达数据（已经log2(TPM+1)转换后的数据）
+expression_data <- read.csv(paste0(data_path, "OmicsExpressionProteinCodingGenesTPMLogp1.csv"), 
+                           header = TRUE, 
+                           check.names = FALSE)
+
+# 设置行名为细胞系ID，转换为矩阵
+rownames(expression_data) <- expression_data[,1]
+expression_matrix <- as.matrix(expression_data[,-1])
+
+cat("表达数据维度:", dim(expression_matrix), "\n")
+cat("示例数据 - 前3个细胞系，前5个基因:\n")
+print(expression_matrix[1:3, 1:5])
+
+## 2. 读取拷贝数变异数据
+cnv_data <- read.csv(paste0(data_path, "PortalOmicsCNGeneLog2.csv"), 
+                    header = TRUE, 
+                    check.names = FALSE)
+
+# 设置行名为细胞系ID，转换为矩阵
+rownames(cnv_data) <- cnv_data[,1]
+cnv_matrix <- as.matrix(cnv_data[,-1])
+
+# 应用log2转换（如果数据还未转换）
+# 注意：根据数据描述，CNV数据应该已经是log2转换过的比值
+# 如果数据已经是转换后的，跳过这步；如果是原始比值，需要转换
+# cnv_matrix <- log2(cnv_matrix + 1)
+
+cat("CNV数据维度:", dim(cnv_matrix), "\n")
+
+## 3. 读取基因突变数据
+mutation_data <- read.csv(paste0(data_path, "OmicsSomaticMutationsMatrixDamaging.csv"), 
+                         header = TRUE, 
+                         check.names = FALSE)
+
+# 设置行名为细胞系ID
+rownames(mutation_data) <- mutation_data[,1]
+mutation_matrix <- as.matrix(mutation_data[,-1])
+
+cat("突变数据维度:", dim(mutation_matrix), "\n")
+cat("突变数据取值范围:", unique(as.vector(mutation_matrix)), "\n")
+
+## 4. 数据质量控制和基本信息
+check_data_summary <- function(data, name) {
+  cat("\n====", name, "数据概览 ====\n")
+  cat("细胞系数:", nrow(data), "\n")
+  cat("基因数:", ncol(data), "\n")
+  cat("数据范围:", round(range(data, na.rm = TRUE), 3), "\n")
+  cat("缺失值数量:", sum(is.na(data)), "\n")
+  cat("数据格式:", class(data), "\n")
+}
+
+check_data_summary(expression_matrix, "基因表达")
+check_data_summary(cnv_matrix, "拷贝数变异")
+check_data_summary(mutation_matrix, "基因突变")
+
+## 5. 数据整合 - 寻找共同的细胞系和基因
+# 获取共同细胞系
+common_cell_lines <- Reduce(intersect, list(
+  rownames(expression_matrix),
+  rownames(cnv_matrix),
+  rownames(mutation_matrix)
+))
+
+cat("\n共同细胞系数:", length(common_cell_lines), "\n")
+
+# 获取共同基因
+common_genes <- Reduce(intersect, list(
+  colnames(expression_matrix),
+  colnames(cnv_matrix), 
+  colnames(mutation_matrix)
+))
+
+cat("共同基因数:", length(common_genes), "\n")
+
+## 6. 创建整合的数据集
+# 根据共同细胞系和基因筛选数据
+expression_integrated <- expression_matrix[common_cell_lines, common_genes]
+cnv_integrated <- cnv_matrix[common_cell_lines, common_genes]
+mutation_integrated <- mutation_matrix[common_cell_lines, common_genes]
+
+cat("\n整合后数据维度:\n")
+cat("表达数据:", dim(expression_integrated), "\n")
+cat("CNV数据:", dim(cnv_integrated), "\n")
+cat("突变数据:", dim(mutation_integrated), "\n")
+
+## 7. 读取KEGG基因集数据
+read_gmt_file <- function(file_path) {
+  lines <- readLines(file_path)
+  genesets <- list()
+  
+  for (line in lines) {
+    elements <- str_split(line, "\t")[[1]]
+    if (length(elements) >= 3) {
+      pathway_name <- elements[1]
+      genes <- elements[3:length(elements)]
+      genes <- genes[genes != ""]  # 移除空值
+      genesets[[pathway_name]] <- genes
+    }
+  }
+  return(genesets)
+}
+
+# 读取KEGG基因集
+data_path1 <- "D:/Users/lenovo/Desktop/Prediction of anticancer drug resistance/dataset/GSEA/"
+
+kegg_genesets <- read_gmt_file(paste0(data_path1, "c2.cp.kegg_medicus.v2025.1.Hs.symbols.gmt"))
+cat("\n成功读取", length(kegg_genesets), "个KEGG通路基因集\n")
+
+# 检查基因集与我们的数据的重叠情况
+kegg_genes_all <- unique(unlist(kegg_genesets))
+overlap_genes <- intersect(common_genes, kegg_genes_all)
+cat("KEGG基因集与数据重叠基因数:", length(overlap_genes), "\n")
+
+## 8. 保存处理后的数据
+saveRDS(expression_integrated, paste0(data_path, "processed_expression.rds"))
+saveRDS(cnv_integrated, paste0(data_path, "processed_cnv.rds"))
+saveRDS(mutation_integrated, paste0(data_path, "processed_mutation.rds"))
+saveRDS(kegg_genesets, paste0(data_path, "kegg_genesets.rds"))
+
+# 保存数据概览
+processing_summary <- list(
+  common_cell_lines = common_cell_lines,
+  common_genes = common_genes,
+  expression_dim = dim(expression_integrated),
+  cnv_dim = dim(cnv_integrated),
+  mutation_dim = dim(mutation_integrated),
+  kegg_pathways_count = length(kegg_genesets),
+  gene_overlap = length(overlap_genes)
+)
+
+saveRDS(processing_summary, paste0(data_path, "processing_summary.rds"))
+
+cat("\n=== 数据处理完成 ===\n")
+cat("输出文件:\n")
+cat("- processed_expression.rds: 整合后的表达数据\n")
+cat("- processed_cnv.rds: 整合后的CNV数据\n")
+cat("- processed_mutation.rds: 整合后的突变数据\n")
+cat("- kegg_genesets.rds: KEGG基因集\n")
+cat("- processing_summary.rds: 处理摘要\n")
+```
+```{r}
+# 数据分布可视化
+library(ggplot2)
+library(reshape2)
+
+# 表达数据分布
+expression_df <- as.data.frame(expression_integrated) %>%
+  melt(variable.name = "Gene", value.name = "Expression")
+
+ggplot(expression_df, aes(x = Expression)) +
+  geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+  labs(title = "Distribution of gene expression data", x = "log2(TPM+1)", y = "frequency") +
+  theme_minimal()
+
+# 突变数据统计
+mutation_stats <- data.frame(
+  CellLine = rownames(mutation_integrated),
+  TotalMutations = rowSums(mutation_integrated > 0)
+)
+
+ggplot(mutation_stats, aes(x = TotalMutations)) +
+  geom_histogram(bins = 30, fill = "red", alpha = 0.7) +
+  labs(title = "The distribution of mutation numbers in each cell line", x = "mut_num", y = "Cell line_num") +
+  theme_minimal()
+
+# 保存可视化结果
+ggsave("expression_distribution.png", width = 8, height = 6)
+ggsave("mutation_distribution.png", width = 8, height = 6)
+```
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+```{r}
+
+# 安装并加载必要的包
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("readr")) install.packages("readr")
+library(dplyr)
+library(readr)
+
+gmt_to_csv <- function(gmt_file, csv_file) {
+  # 读取GMT文件
+  lines <- readLines(gmt_file)
+  
+  # 解析GMT格式
+  result <- lapply(lines, function(line) {
+    parts <- strsplit(line, "\t")[[1]]
+    data.frame(
+      GeneSet = parts[1],
+      Description = parts[2],
+      Gene = if(length(parts) > 2) parts[3:length(parts)] else NA
+    )
+  })
+  
+  # 合并并保存
+  final_df <- do.call(rbind, result)
+  write_csv(final_df, csv_file)
+}
+
+# 使用示例
+gmt_to_csv("dataset/GSEA/c2.cp.kegg_legacy.v2025.1.Hs.symbols.gmt", "c2.cp.kegg_legacy.v2025.1.Hs.symbols.csv")
+
+
+
+
+
+
+
+
+
+
+cat("当前工作目录:", getwd(), "\n")
+
+# 2. 查找GMT文件
+gmt_files <- list.files(pattern = "\\.gmt$", recursive = TRUE, ignore.case = TRUE)
+cat("找到的GMT文件:\n")
+print(gmt_files)
+
+# 3. 如果找到文件，使用完整路径
+if(length(gmt_files) > 0) {
+  full_path <- normalizePath(gmt_files[1])
+  cat("使用文件:", full_path, "\n")
+  gmt_to_csv(full_path, "output.csv")
+} else {
+  cat("没有找到GMT文件，请检查文件位置\n")
+}
+
+```

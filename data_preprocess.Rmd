@@ -1,0 +1,254 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+# 安装必要的包（如果尚未安装）
+# install.packages(c("tidyverse", "data.table", "readr", "dplyr", "tidyr"))
+
+# 加载包
+library(tidyverse)
+library(data.table)
+library(readr)
+```
+
+
+```{r}
+# 设置数据文件路径（请根据实际路径修改）
+data_path <- "D:/Users/lenovo/Desktop/Prediction of anticancer drug resistance/dataset/CCLE/"
+
+# 读取基因表达数据 (TPM)
+expression_data <- fread(paste0(data_path, "CCLE_expression.csv")) %>%
+  as.data.frame()
+
+# 设置行名为基因名（假设第一列是基因名）
+rownames(expression_data) <- expression_data[,1]
+expression_data <- expression_data[,-1]
+
+# log2转换（添加伪计数1）
+expression_log2 <- log2(expression_data + 1)
+
+# 检查数据维度
+cat("表达数据维度:", dim(expression_log2), "\n")
+cat("基因数:", nrow(expression_log2), "细胞系数:", ncol(expression_log2), "\n")
+
+
+# 读取拷贝数变异数据
+cnv_data <- fread(paste0(data_path, "CCLE_copy_number.csv")) %>%
+  as.data.frame()
+
+# 设置行名为基因名
+rownames(cnv_data) <- cnv_data[,1]
+cnv_data <- cnv_data[,-1]
+
+# log2转换（添加伪计数1）
+cnv_log2 <- log2(cnv_data + 1)
+
+cat("CNV数据维度:", dim(cnv_log2), "\n")
+
+
+# 读取基因突变数据
+mutation_data <- fread(paste0(data_path, "CCLE_mutations.csv")) %>%
+  as.data.frame()
+
+# 设置行名为基因名
+rownames(mutation_data) <- mutation_data[,1]
+mutation_data <- mutation_data[,-1]
+
+cat("突变数据维度:", dim(mutation_data), "\n")
+
+
+
+
+
+
+# 读取三个数据集
+expression_raw <- read.csv("CCLE_expression.csv", row.names = 1, check.names = FALSE)
+cnv_raw <- read.csv("CCLE_copy_number.csv", row.names = 1, check.names = FALSE)
+mutation_raw <- read.csv("CCLE_mutations.csv", row.names = 1, check.names = FALSE)
+
+# 应用log2转换
+expression_processed <- log2(expression_raw + 1)
+cnv_processed <- log2(cnv_raw + 1)
+# 突变数据不需要转换
+mutation_processed <- mutation_raw
+
+
+# 读取包含基因名和ID的数据
+expression_with_ids <- read.csv("OmicsExpressionProteinCodingGenesTPMLogp1.csv", 
+                               header = TRUE, 
+                               check.names = FALSE)
+
+# 查看数据结构
+head(colnames(expression_with_ids), 10)
+
+# 如果第一列是细胞系ID，第一行是基因名
+# 设置行名为细胞系ID，列名为基因名
+rownames(expression_with_ids) <- expression_with_ids[,1]
+expression_matrix <- as.matrix(expression_with_ids[,-1])
+
+# 应用log2转换
+expression_final <- log2(expression_matrix + 1)
+
+
+
+
+
+expression_data <- read.csv(paste0(data_path, "OmicsExpressionProteinCodingGenesTPMLogp1.csv"), 
+                           header = TRUE, 
+                           check.names = FALSE)
+```
+
+
+
+
+```{r}
+# 数据概览函数
+summarize_dataset <- function(data, dataset_name) {
+  cat("\n====", dataset_name, "数据概览 ====\n")
+  cat("维度:", dim(data), "\n")
+  cat("基因数:", nrow(data), "\n")
+  cat("细胞系数:", ncol(data), "\n")
+  cat("数据范围:", range(data, na.rm = TRUE), "\n")
+  cat("缺失值比例:", round(mean(is.na(data)) * 100, 2), "%\n")
+}
+
+# 应用概览函数
+summarize_dataset(expression_log2, "基因表达")
+summarize_dataset(cnv_log2, "拷贝数变异")
+summarize_dataset(mutation_data, "基因突变")
+```
+
+##GSEA
+```{r}
+# 读取KEGG基因集数据 (假设是GMT格式)
+kegg_gmt <- read_lines(paste0(data_path, "c2.kegg.v2023.2.Hs.symbols.gmt"))
+
+# 解析GMT文件
+kegg_genesets <- list()
+kegg_descriptions <- character()
+
+for (line in kegg_gmt) {
+  elements <- str_split(line, "\t")[[1]]
+  pathway_name <- elements[1]
+  pathway_description <- elements[2]
+  genes <- elements[3:length(elements)]
+  
+  kegg_genesets[[pathway_name]] <- genes
+  kegg_descriptions[pathway_name] <- pathway_description
+}
+
+cat("KEGG基因集数量:", length(kegg_genesets), "\n")
+cat("平均每个基因集的基因数:", 
+    round(mean(sapply(kegg_genesets, length)), 1), "\n")
+```
+
+
+```{r}
+# 获取所有数据集的共同基因
+common_genes <- Reduce(intersect, list(
+  rownames(expression_log2),
+  rownames(cnv_log2), 
+  rownames(mutation_data)
+))
+
+cat("共同基因数:", length(common_genes), "\n")
+
+# 获取所有数据集的共同细胞系
+common_cell_lines <- Reduce(intersect, list(
+  colnames(expression_log2),
+  colnames(cnv_log2),
+  colnames(mutation_data)
+))
+
+cat("共同细胞系数:", length(common_cell_lines), "\n")
+```
+
+
+
+```{r}
+# 子集数据以匹配共同基因和细胞系
+expression_filtered <- expression_log2[common_genes, common_cell_lines]
+cnv_filtered <- cnv_log2[common_genes, common_cell_lines]
+mutation_filtered <- mutation_data[common_genes, common_cell_lines]
+
+# 验证维度匹配
+cat("过滤后表达数据维度:", dim(expression_filtered), "\n")
+cat("过滤后CNV数据维度:", dim(cnv_filtered), "\n") 
+cat("过滤后突变数据维度:", dim(mutation_filtered), "\n")
+```
+
+
+
+
+```{r}
+# 安装可视化包（如果需要）
+# install.packages(c("ggplot2", "pheatmap", "corrplot"))
+
+library(ggplot2)
+library(pheatmap)
+
+# 表达数据分布可视化
+expression_melt <- as.data.frame(expression_filtered) %>%
+  rownames_to_column("Gene") %>%
+  pivot_longer(cols = -Gene, names_to = "CellLine", values_to = "Expression")
+
+ggplot(expression_melt, aes(x = Expression)) +
+  geom_histogram(bins = 50, fill = "blue", alpha = 0.7) +
+  labs(title = "基因表达数据分布 (log2 TPM+1)",
+       x = "log2(TPM+1)", y = "频率") +
+  theme_minimal()
+
+
+
+# 突变数据汇总
+mutation_summary <- data.frame(
+  NoMutation = rowSums(mutation_filtered == 0, na.rm = TRUE),
+  LowFreqMutation = rowSums(mutation_filtered == 1, na.rm = TRUE),
+  HighFreqMutation = rowSums(mutation_filtered == 2, na.rm = TRUE)
+)
+
+# 突变频率最高的基因
+top_mutated_genes <- mutation_summary %>%
+  mutate(TotalMutations = LowFreqMutation + HighFreqMutation) %>%
+  arrange(desc(TotalMutations)) %>%
+  head(20)
+
+print("突变频率最高的20个基因:")
+print(top_mutated_genes)
+```
+```{r}
+# 保存处理后的数据
+saveRDS(expression_filtered, "processed_expression_data.rds")
+saveRDS(cnv_filtered, "processed_cnv_data.rds") 
+saveRDS(mutation_filtered, "processed_mutation_data.rds")
+saveRDS(kegg_genesets, "kegg_genesets.rds")
+
+# 保存数据概览
+data_summary <- list(
+  expression_dim = dim(expression_filtered),
+  cnv_dim = dim(cnv_filtered),
+  mutation_dim = dim(mutation_filtered),
+  common_genes = length(common_genes),
+  common_cell_lines = length(common_cell_lines),
+  kegg_genesets_count = length(kegg_genesets)
+)
+
+saveRDS(data_summary, "data_processing_summary.rds")
+
+cat("数据处理完成！所有文件已保存。\n")
+```
+```{r}
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
